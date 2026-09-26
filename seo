@@ -1,136 +1,773 @@
 """
-Phare — Agent IA specialise SEO & GEO (Generative Engine Optimization)
-Construit avec LangChain + Claude (Anthropic).
+============================================================
+PHARE — AGENT IA SEO & GEO
+============================================================
 
-Usage:
-    export ANTHROPIC_API_KEY="sk-ant-..."
-    python seo_agent.py
+Stack :
+- Python
+- Groq SDK
+- Qwen 3.8 27B
+- DuckDuckGo HTML Search
+- Tool Calling natif Groq
+
+Aucune dépendance :
+- Anthropic
+- LangChain
+- python-dotenv
+
+Lancement :
+
+    python seo.py
+
+============================================================
 """
 
-import os
-import sys
-from dotenv import load_dotenv
+import json
+import requests
+from bs4 import BeautifulSoup
+from groq import Groq
 
-from langchain_anthropic import ChatAnthropic
-from langchain_community.tools import DuckDuckGoSearchRun
-from langchain.agents import create_agent
-from langchain.tools import tool
-from langchain_core.messages import HumanMessage
 
-load_dotenv()
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
-MODEL_NAME = "claude-sonnet-4-6"
+GROQ_API_KEY =""
 
-SYSTEM_PROMPT = """Tu es Phare, un consultant expert en SEO et en GEO \
-(Generative Engine Optimization) qui repond en francais, avec un ton direct, \
-concret et professionnel.
+MODEL_NAME = "qwen/qwen3.8-27b"
 
-Ton role : aider a ameliorer la visibilite d'un contenu sur Google ET sur les \
-moteurs generatifs (ChatGPT, Perplexity, AI Overviews, Copilot).
 
-Regles :
-- Sois concret et actionnable, jamais generique.
-- Pour les mots-cles : indique l'intention de recherche (informationnelle, \
-transactionnelle, navigationnelle) et une estimation qualitative de la \
-concurrence (faible / moyenne / elevee).
-- Pour la structure de contenu : utilise une hierarchie H1/H2/H3 claire.
-- Pour la partie GEO : explique comment structurer le contenu pour etre cite \
-par les IA generatives (reponses directes en haut de page, formulations en \
-questions-reponses, donnees verifiables, structuration claire).
-- Utilise l'outil `verifier_longueur_balise` des que tu proposes un meta \
-title ou une meta description, pour valider que la longueur est optimale \
-avant de la donner a l'utilisateur.
-- Utilise l'outil `recherche_web` quand tu as besoin d'infos recentes : \
-tendances, concurrents, actualite d'un secteur.
-- Reponses synthetiques (150-300 mots) sauf si on te demande plus de detail.
-- Pas de tableaux markdown complexes, prefere des listes a puces courtes.
+# ============================================================
+# CLIENT GROQ
+# ============================================================
+
+client = Groq(
+    api_key=GROQ_API_KEY
+)
+
+
+# ============================================================
+# SYSTEM PROMPT
+# ============================================================
+
+SYSTEM_PROMPT = """
+Tu es Phare, un consultant expert en SEO et en GEO
+(Generative Engine Optimization).
+
+Tu réponds toujours en français.
+
+Ton style :
+
+- Direct
+- Professionnel
+- Concret
+- Actionnable
+- Synthétique
+- Orienté résultats
+
+Ton objectif est d'aider l'utilisateur à améliorer la visibilité
+de ses contenus sur :
+
+- Google
+- Google AI Overviews
+- ChatGPT
+- Perplexity
+- Microsoft Copilot
+- autres moteurs de recherche génératifs
+
+============================================================
+SEO
+============================================================
+
+Pour les mots-clés :
+
+- Donne le mot-clé
+- Indique l'intention :
+    informationnelle
+    transactionnelle
+    navigationnelle
+
+- Indique la concurrence :
+    faible
+    moyenne
+    élevée
+
+- Explique brièvement pourquoi.
+
+Ne prétends jamais connaître un volume de recherche exact
+si aucune donnée fiable n'est disponible.
+
+============================================================
+STRUCTURE
+============================================================
+
+Lorsque tu proposes une structure de contenu :
+
+H1
+H2
+H3
+
+La structure doit répondre à l'intention de recherche.
+
+============================================================
+GEO
+============================================================
+
+Pour le GEO :
+
+- Réponse directe en haut de page
+- Questions / réponses
+- Définitions claires
+- Données vérifiables
+- Sources
+- Paragraphes facilement extractibles
+- H1 / H2 / H3
+- Entités clairement identifiées
+- FAQ pertinente
+- Informations précises
+
+L'objectif est de rendre le contenu facile à comprendre,
+à extraire et à citer par les moteurs génératifs.
+
+============================================================
+META TITLE
+============================================================
+
+IMPORTANT :
+
+Chaque fois que tu proposes un meta title :
+
+1. Utilise l'outil verifier_longueur_balise.
+2. Vérifie le résultat.
+3. Si nécessaire, modifie le title.
+4. Vérifie à nouveau.
+5. Donne la version finale.
+
+============================================================
+META DESCRIPTION
+============================================================
+
+IMPORTANT :
+
+Chaque fois que tu proposes une meta description :
+
+1. Utilise l'outil verifier_longueur_balise.
+2. Vérifie le résultat.
+3. Si nécessaire, modifie la description.
+4. Vérifie à nouveau.
+5. Donne la version finale.
+
+============================================================
+RECHERCHE WEB
+============================================================
+
+Utilise recherche_web lorsque l'utilisateur demande :
+
+- informations récentes
+- tendances
+- concurrents
+- actualité
+- données actuelles
+- analyse d'un secteur
+- informations sur une entreprise
+- informations nécessitant une vérification
+
+Ne prétends jamais avoir effectué une recherche si tu ne l'as
+pas réellement effectuée.
+
+============================================================
+RÉPONSES
+============================================================
+
+Réponses généralement comprises entre 150 et 300 mots.
+
+Utilise :
+
+- titres
+- listes
+- exemples
+- recommandations concrètes
+
+Évite les tableaux Markdown complexes.
+
+Si l'utilisateur demande une analyse approfondie,
+tu peux dépasser 300 mots.
+
+============================================================
+OUTILS
+============================================================
+
+Tu disposes de deux outils :
+
+1. recherche_web
+2. verifier_longueur_balise
+
+Utilise-les lorsque cela est nécessaire.
 """
 
 
-@tool
-def verifier_longueur_balise(texte: str, type_balise: str) -> str:
-    """Verifie si un meta title ou une meta description respecte la longueur
-    optimale pour le SEO.
+# ============================================================
+# OUTIL : VÉRIFICATION META TITLE / DESCRIPTION
+# ============================================================
 
-    Args:
-        texte: le contenu de la balise a verifier (title ou description)
-        type_balise: "title" ou "description"
+def verifier_longueur_balise(
+    texte,
+    type_balise
+):
     """
+    Vérifie la longueur d'une balise SEO.
+    """
+
     longueur = len(texte)
-    if type_balise.lower() == "title":
-        mini, maxi = 30, 60
-    elif type_balise.lower() == "description":
-        mini, maxi = 120, 160
+
+    type_balise = type_balise.lower().strip()
+
+    if type_balise == "title":
+
+        minimum = 30
+        maximum = 60
+
+    elif type_balise == "description":
+
+        minimum = 120
+        maximum = 160
+
     else:
-        return "type_balise invalide, utilise 'title' ou 'description'."
 
-    if longueur < mini:
-        statut = f"trop courte ({longueur} caracteres, ideal {mini}-{maxi})"
-    elif longueur > maxi:
-        statut = f"trop longue ({longueur} caracteres, ideal {mini}-{maxi}), risque de troncature dans les resultats Google"
-    else:
-        statut = f"longueur optimale ({longueur} caracteres, dans la fourchette {mini}-{maxi})"
-
-    return f"{type_balise}: {statut}"
-
-
-def build_tools():
-    search = DuckDuckGoSearchRun(name="recherche_web")
-    search.description = (
-        "Recherche des informations recentes sur le web : tendances, "
-        "concurrents, actualite d'un secteur, volumes approximatifs "
-        "d'interet pour un sujet. Utilise une requete courte et precise."
-    )
-    return [search, verifier_longueur_balise]
-
-
-def build_agent():
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        print(
-            "Erreur: la variable d'environnement ANTHROPIC_API_KEY n'est pas definie.\n"
-            "Fais: export ANTHROPIC_API_KEY='sk-ant-...' puis relance le script."
+        return (
+            "Erreur : type_balise invalide. "
+            "Utilise 'title' ou 'description'."
         )
-        sys.exit(1)
 
-    llm = ChatAnthropic(model=MODEL_NAME, temperature=0.4, max_tokens=1200)
-    tools = build_tools()
+    if longueur < minimum:
 
-    agent = create_agent(model=llm, tools=tools, system_prompt=SYSTEM_PROMPT)
-    return agent
+        statut = (
+            f"TROP COURTE — {longueur} caractères. "
+            f"Longueur recommandée : {minimum}-{maximum}."
+        )
+
+    elif longueur > maximum:
+
+        statut = (
+            f"TROP LONGUE — {longueur} caractères. "
+            f"Longueur recommandée : {minimum}-{maximum}. "
+            "Risque de troncature dans Google."
+        )
+
+    else:
+
+        statut = (
+            f"OPTIMALE — {longueur} caractères. "
+            f"Fourchette : {minimum}-{maximum}."
+        )
+
+    return (
+        f"{type_balise.upper()} : {statut}\n"
+        f"Texte : {texte}"
+    )
 
 
-def run_cli():
-    agent = build_agent()
-    messages = []
+# ============================================================
+# OUTIL : RECHERCHE WEB
+# ============================================================
 
-    print("=" * 60)
-    print("  Phare — Agent SEO & GEO (Python / LangChain)")
-    print("  Tape 'quitter' pour sortir.")
-    print("=" * 60)
+def recherche_web(query):
+    """
+    Recherche des informations sur le web via DuckDuckGo.
+    """
+
+    try:
+
+        url = "https://html.duckduckgo.com/html/"
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 "
+                "(Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/130.0 Safari/537.36"
+            )
+        }
+
+        response = requests.post(
+            url,
+            data={
+                "q": query
+            },
+            headers=headers,
+            timeout=10
+        )
+
+        response.raise_for_status()
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        results = []
+
+        search_results = soup.select(
+            ".result"
+        )
+
+        for result in search_results[:6]:
+
+            title_element = result.select_one(
+                ".result__title"
+            )
+
+            snippet_element = result.select_one(
+                ".result__snippet"
+            )
+
+            link_element = result.select_one(
+                ".result__a"
+            )
+
+            if not title_element:
+                continue
+
+            title = title_element.get_text(
+                " ",
+                strip=True
+            )
+
+            snippet = ""
+
+            if snippet_element:
+
+                snippet = snippet_element.get_text(
+                    " ",
+                    strip=True
+                )
+
+            link = ""
+
+            if link_element:
+
+                link = link_element.get(
+                    "href",
+                    ""
+                )
+
+            results.append(
+                {
+                    "title": title,
+                    "snippet": snippet,
+                    "url": link
+                }
+            )
+
+        if not results:
+
+            return (
+                "Aucun résultat trouvé pour cette recherche."
+            )
+
+        return json.dumps(
+            results,
+            ensure_ascii=False,
+            indent=2
+        )
+
+    except Exception as e:
+
+        return (
+            f"Erreur pendant la recherche web : {str(e)}"
+        )
+
+
+# ============================================================
+# DÉFINITION DES OUTILS POUR GROQ
+# ============================================================
+
+TOOLS = [
+
+    {
+        "type": "function",
+
+        "function": {
+
+            "name": "verifier_longueur_balise",
+
+            "description": (
+                "Vérifie la longueur d'un meta title "
+                "ou d'une meta description pour le SEO."
+            ),
+
+            "parameters": {
+
+                "type": "object",
+
+                "properties": {
+
+                    "texte": {
+
+                        "type": "string",
+
+                        "description": (
+                            "Texte de la balise à vérifier."
+                        )
+                    },
+
+                    "type_balise": {
+
+                        "type": "string",
+
+                        "enum": [
+                            "title",
+                            "description"
+                        ],
+
+                        "description": (
+                            "Type de balise SEO."
+                        )
+                    }
+                },
+
+                "required": [
+                    "texte",
+                    "type_balise"
+                ]
+            }
+        }
+    },
+
+    {
+        "type": "function",
+
+        "function": {
+
+            "name": "recherche_web",
+
+            "description": (
+                "Recherche des informations récentes "
+                "sur Internet. À utiliser pour les tendances, "
+                "concurrents, actualité et données actuelles."
+            ),
+
+            "parameters": {
+
+                "type": "object",
+
+                "properties": {
+
+                    "query": {
+
+                        "type": "string",
+
+                        "description": (
+                            "Requête courte et précise."
+                        )
+                    }
+                },
+
+                "required": [
+                    "query"
+                ]
+            }
+        }
+    }
+]
+
+
+# ============================================================
+# MAP DES OUTILS
+# ============================================================
+
+AVAILABLE_FUNCTIONS = {
+
+    "verifier_longueur_balise":
+        verifier_longueur_balise,
+
+    "recherche_web":
+        recherche_web
+}
+
+
+# ============================================================
+# EXÉCUTER UN OUTIL
+# ============================================================
+
+def execute_tool_call(tool_call):
+
+    function_name = tool_call.function.name
+
+    try:
+
+        function_args = json.loads(
+            tool_call.function.arguments
+        )
+
+    except json.JSONDecodeError as e:
+
+        return (
+            f"Erreur JSON dans les arguments de "
+            f"{function_name} : {str(e)}"
+        )
+
+    if function_name not in AVAILABLE_FUNCTIONS:
+
+        return (
+            f"Outil inconnu : {function_name}"
+        )
+
+    function_to_call = (
+        AVAILABLE_FUNCTIONS[function_name]
+    )
+
+    try:
+
+        result = function_to_call(
+            **function_args
+        )
+
+        return str(result)
+
+    except Exception as e:
+
+        return (
+            f"Erreur lors de l'exécution de "
+            f"{function_name} : {str(e)}"
+        )
+
+
+# ============================================================
+# AGENT PHARE
+# ============================================================
+
+def ask_phare(messages):
+    """
+    Envoie une conversation à Qwen via Groq
+    et gère automatiquement les tool calls.
+    """
 
     while True:
+
+        response = client.chat.completions.create(
+
+            model=MODEL_NAME,
+
+            messages=messages,
+
+            tools=TOOLS,
+
+            tool_choice="auto",
+
+            temperature=0.6,
+
+            max_completion_tokens=2048,
+
+            top_p=0.95,
+
+            reasoning_effort="default"
+        )
+
+        assistant_message = (
+            response.choices[0].message
+        )
+
+        # ----------------------------------------------------
+        # Aucun outil demandé
+        # ----------------------------------------------------
+
+        if not assistant_message.tool_calls:
+
+            return assistant_message.content
+
+        # ----------------------------------------------------
+        # Ajouter la réponse de l'assistant
+        # ----------------------------------------------------
+
+        messages.append(
+            assistant_message
+        )
+
+        # ----------------------------------------------------
+        # Exécuter les outils
+        # ----------------------------------------------------
+
+        for tool_call in assistant_message.tool_calls:
+
+            print(
+                f"\n[Phare → outil : "
+                f"{tool_call.function.name}]"
+            )
+
+            result = execute_tool_call(
+                tool_call
+            )
+
+            # ------------------------------------------------
+            # Ajouter le résultat de l'outil
+            # ------------------------------------------------
+
+            messages.append(
+                {
+                    "role": "tool",
+
+                    "tool_call_id":
+                        tool_call.id,
+
+                    "name":
+                        tool_call.function.name,
+
+                    "content":
+                        result
+                }
+            )
+
+
+# ============================================================
+# INTERFACE CLI
+# ============================================================
+
+def run_cli():
+
+    print()
+    print("=" * 65)
+    print("              PHARE — SEO & GEO AGENT")
+    print("=" * 65)
+    print()
+    print(" Modèle   : Qwen 3.8 27B")
+    print(" Provider : Groq")
+    print(" Framework: Groq SDK uniquement")
+    print()
+    print(" Outils :")
+    print("   • Recherche Web")
+    print("   • Meta Title Checker")
+    print("   • Meta Description Checker")
+    print()
+    print(" Tape 'quitter' pour arrêter.")
+    print("=" * 65)
+
+    # --------------------------------------------------------
+    # HISTORIQUE
+    # --------------------------------------------------------
+
+    messages = [
+
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT
+        }
+
+    ]
+
+    # --------------------------------------------------------
+    # BOUCLE
+    # --------------------------------------------------------
+
+    while True:
+
         try:
-            user_input = input("\nToi > ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nA bientot.")
+
+            user_input = input(
+                "\nToi > "
+            ).strip()
+
+        except (
+            KeyboardInterrupt,
+            EOFError
+        ):
+
+            print(
+                "\n\nPhare > À bientôt."
+            )
+
             break
+
+        # ----------------------------------------------------
+        # Message vide
+        # ----------------------------------------------------
 
         if not user_input:
+
             continue
-        if user_input.lower() in {"quitter", "exit", "quit"}:
-            print("A bientot.")
+
+        # ----------------------------------------------------
+        # Quitter
+        # ----------------------------------------------------
+
+        if user_input.lower() in {
+            "quitter",
+            "exit",
+            "quit"
+        }:
+
+            print(
+                "\nPhare > À bientôt."
+            )
+
             break
 
-        messages.append(HumanMessage(content=user_input))
-        result = agent.invoke({"messages": messages})
-        reponse_msg = result["messages"][-1]
-        reponse = reponse_msg.content
+        # ----------------------------------------------------
+        # Ajouter message utilisateur
+        # ----------------------------------------------------
 
-        print(f"\nPhare > {reponse}")
+        messages.append(
+            {
+                "role": "user",
+                "content": user_input
+            }
+        )
 
-        messages = result["messages"]
+        print(
+            "\nPhare > ",
+            end="",
+            flush=True
+        )
 
+        try:
+
+            response = ask_phare(
+                messages
+            )
+
+            print(
+                response
+            )
+
+            # ------------------------------------------------
+            # Ajouter la réponse finale à l'historique
+            # ------------------------------------------------
+
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": response
+                }
+            )
+
+        except Exception as e:
+
+            print()
+            print()
+            print(
+                "❌ ERREUR :"
+            )
+
+            print(
+                str(e)
+            )
+
+            # Retirer le dernier message utilisateur
+            # en cas d'erreur
+
+            if (
+                messages
+                and messages[-1]["role"] == "user"
+            ):
+
+                messages.pop()
+
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
+
     run_cli()
